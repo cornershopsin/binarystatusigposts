@@ -1,0 +1,1 @@
+Automate the boring part first. Before reaching for AI, write down the steps you repeat every week. If you can list them, you can script them.

@@ -1,0 +1,75 @@
+name: Publish to Instagram
+
+# Publishes JPEGs that are ADDED under posts/ (caption in a .txt file with the same name).
+#
+# Safety switches:
+#  - Push-triggered publishing stays OFF until you create the repository VARIABLE
+#    AUTO_PUBLISH with the value "true" (Settings > Secrets and variables > Actions > Variables).
+#  - Manual runs (Run workflow button) default to dry_run = true: everything is
+#    validated and the image URL is checked, but no Instagram API call is made.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "posts/*.jpg"
+      - "posts/*.jpeg"
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Path of the image to publish, e.g. posts/2026-10-08-example.jpg"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run: validate only, do not call Instagram"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-instagram
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || vars.AUTO_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    env:
+      IG_USER_ID: ${{ secrets.IG_USER_ID }}
+      IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+      IG_GRAPH_BASE: ${{ vars.IG_GRAPH_BASE }}
+      IG_GRAPH_VERSION: ${{ vars.IG_GRAPH_VERSION }}
+      DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Publish
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          INPUT_IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            python3 scripts/publish_instagram.py "$INPUT_IMAGE"
+            exit 0
+          fi
+
+          # Push event: publish only images ADDED in this push (never re-publish old ones).
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "New branch push with no previous commit; skipping so existing images are not re-published."
+            exit 0
+          fi
+          git diff --name-only --diff-filter=A "$BEFORE" "$GITHUB_SHA" -- 'posts/*.jpg' 'posts/*.jpeg' > "$RUNNER_TEMP/new_images.txt" || true
+          if [ ! -s "$RUNNER_TEMP/new_images.txt" ]; then
+            echo "No newly added images in this push."
+            exit 0
+          fi
+          echo "Images to publish:"
+          cat "$RUNNER_TEMP/new_images.txt"
+          xargs -d '\n' python3 scripts/publish_instagram.py < "$RUNNER_TEMP/new_images.txt"
